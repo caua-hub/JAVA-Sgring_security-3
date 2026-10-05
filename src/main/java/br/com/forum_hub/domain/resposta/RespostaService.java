@@ -1,25 +1,33 @@
 package br.com.forum_hub.domain.resposta;
 
 import br.com.forum_hub.domain.topico.Status;
+import br.com.forum_hub.domain.topico.Topico;
 import br.com.forum_hub.domain.topico.TopicoService;
+import br.com.forum_hub.domain.usuario.Usuario;
 import br.com.forum_hub.infra.exception.RegraDeNegocioException;
 import jakarta.transaction.Transactional;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.access.hierarchicalroles.RoleHierarchy;
+import org.springframework.security.core.GrantedAuthority;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
 
 @Service
 public class RespostaService {
+
     private final RespostaRepository repository;
     private final TopicoService topicoService;
+    private final RoleHierarchy roleHierarchy;
 
-    public RespostaService(RespostaRepository repository, TopicoService topicoService) {
+    public RespostaService(RespostaRepository repository, TopicoService topicoService, RoleHierarchy roleHierarchy) {
         this.repository = repository;
         this.topicoService = topicoService;
+        this.roleHierarchy = roleHierarchy;
     }
 
     @Transactional
-    public Resposta cadastrar(DadosCadastroResposta dados, Long idTopico) {
+    public Resposta cadastrar(DadosCadastroResposta dados, Long idTopico, Usuario autor) {
         var topico = topicoService.buscarPeloId(idTopico);
 
         if(!topico.estaAberto()) {
@@ -32,7 +40,7 @@ public class RespostaService {
 
         topico.incrementarRespostas();
 
-        var resposta = new Resposta(dados, topico);
+        var resposta = new Resposta(dados, topico, autor);
         return repository.save(resposta);
     }
 
@@ -47,16 +55,37 @@ public class RespostaService {
     }
 
     @Transactional
-    public Resposta marcarComoSolucao(Long id) {
+    public Resposta marcarComoSolucao(Long id, Usuario logado) {
         var resposta = buscarPeloId(id);
 
         var topico = resposta.getTopico();
+
+        if(!usuarioTemPernicoes(topico.getAutor(), logado, "ROLE_INSTRUTOR"))
+            throw new AccessDeniedException("Usuario não tem autorizacao para fazer tal ação.");
+
+        if(topico.getAutor().getId() != logado.getId())
+            throw new RegraDeNegocioException("Usuario não tem autorizacao para fazer tal ação.");
+
         if(topico.getStatus() == Status.RESOLVIDO)
             throw new RegraDeNegocioException("O tópico já foi solucionado! Você não pode marcar mais de uma resposta como solução.");
 
         topico.alterarStatus(Status.RESOLVIDO);
         return resposta.marcarComoSolucao();
     }
+
+    private boolean usuarioTemPernicoes(Usuario autor, Usuario logado, String perfilDesejado) {
+        for (GrantedAuthority authority : logado.getAuthorities()) {
+            var autoridadesAlcancaveis = roleHierarchy.getReachableGrantedAuthorities(List.of(authority));
+
+            for (GrantedAuthority perfil:  autoridadesAlcancaveis) {
+                if(perfil.getAuthority().equals(perfilDesejado) || logado.getId().equals(autor.getId())) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
 
     @Transactional
     public void excluir(Long id) {
